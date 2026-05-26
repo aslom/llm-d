@@ -1,0 +1,123 @@
+#!/usr/bin/env python3
+"""llm-d preflight checks script.
+
+Runs pre-startup diagnostics before vLLM starts. Controlled by the
+LLMD_PREFLIGHT_CHECKS environment variable:
+  - unset or empty: all checks run, failures are warnings only
+  - "pause": all checks run, on failure the script sleeps indefinitely
+    so the pod stays up for debugging
+  - "strict": all checks run, on failure the script exits non-zero
+    (preventing vLLM from starting)
+"""
+
+import os
+import socket
+import sys
+import time
+
+
+def check_gpu_available():
+    """Check if NVIDIA GPUs are visible."""
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+            capture_output=True, text=True, timeout=10
+        )
+        if result.returncode == 0:
+            gpus = [g.strip() for g in result.stdout.strip().split("\n") if g.strip()]
+            print(f"[preflight] GPUs detected: {len(gpus)}")
+            for i, gpu in enumerate(gpus):
+                print(f"[preflight]   GPU {i}: {gpu}")
+            return True
+        else:
+            print(f"[preflight] WARNING: nvidia-smi failed: {result.stderr.strip()}")
+            return False
+    except FileNotFoundError:
+        print("[preflight] WARNING: nvidia-smi not found")
+        return False
+    except Exception as e:
+        print(f"[preflight] WARNING: GPU check error: {e}")
+        return False
+
+
+def check_dns_resolution():
+    """Check basic DNS resolution works."""
+    try:
+        socket.getaddrinfo("kubernetes.default.svc", 443)
+        print("[preflight] DNS resolution: OK (kubernetes.default.svc)")
+        return True
+    except socket.gaierror as e:
+        print(f"[preflight] WARNING: DNS resolution failed: {e}")
+        return False
+
+
+def check_nixl_port():
+    """Check that the NIXL side-channel port is bindable."""
+    port = 5600
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.bind(("0.0.0.0", port))
+        s.close()
+        print(f"[preflight] NIXL port {port}: bindable")
+        return True
+    except OSError as e:
+        print(f"[preflight] WARNING: NIXL port {port} not bindable: {e}")
+        return False
+
+
+def check_shared_memory():
+    """Check /dev/shm is mounted with sufficient space."""
+    try:
+        statvfs = os.statvfs("/dev/shm")
+        size_gb = (statvfs.f_frsize * statvfs.f_blocks) / (1024**3)
+        print(f"[preflight] /dev/shm size: {size_gb:.1f} GiB")
+        if size_gb < 1.0:
+            print("[preflight] WARNING: /dev/shm is less than 1 GiB")
+            return False
+        return True
+    except OSError as e:
+        print(f"[preflight] WARNING: /dev/shm check failed: {e}")
+        return False
+
+
+def main():
+    mode = os.environ.get("LLMD_PREFLIGHT_CHECKS", "").strip().lower()
+    print(f"[preflight] Starting llm-d preflight checks (mode={mode or 'default'})")
+
+    checks = [
+        ("GPU availability", check_gpu_available),
+        ("DNS resolution", check_dns_resolution),
+        ("NIXL port", check_nixl_port),
+        ("Shared memory", check_shared_memory),
+    ]
+
+    failures = []
+    for name, check_fn in checks:
+        try:
+            if not check_fn():
+                failures.append(name)
+        except Exception as e:
+            print(f"[preflight] WARNING: {name} raised unexpected error: {e}")
+            failures.append(name)
+
+    if failures:
+        print(f"[preflight] Failed checks: {', '.join(failures)}")
+        if mode == "strict":
+            print("[preflight] Mode is 'strict' — exiting with error")
+            sys.exit(1)
+        elif mode == "pause":
+            print("[preflight] Mode is 'pause' — sleeping indefinitely for debugging")
+            print("[preflight] To continue, delete this pod or unset LLMD_PREFLIGHT_CHECKS")
+            while True:
+                time.sleep(3600)
+        else:
+            print("[preflight] Continuing despite failures (default mode)")
+    else:
+        print("[preflight] All checks passed")
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

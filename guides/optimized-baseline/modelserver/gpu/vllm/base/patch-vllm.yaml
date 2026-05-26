@@ -8,16 +8,18 @@ spec:
     spec:
       containers:
         - name: modelserver
-          command: ["vllm", "serve"]
-          # Include all args in overlay patch for consistency
+          command: ["bash", "-c"]
+          # For distributed tracing, add to LLMD_EXTRA_VLLM_ARGS:
+          #   --otlp-traces-endpoint=http://otel-collector:4317
+          #   --collect-detailed-traces=all
           args:
-            - "Qwen/Qwen3-32B"
-            - "--disable-access-log-for-endpoints=/health,/metrics,/v1/models"
-            - "--tensor-parallel-size=2"
-            - "--gpu-memory-utilization=0.95"
-            # Uncomment for distributed tracing
-            # - "--otlp-traces-endpoint=http://otel-collector:4317"
-            # - "--collect-detailed-traces=all"
+            - |
+              ${LLMD_PRE_START_COMMAND:+$LLMD_PRE_START_COMMAND &&} \
+              exec vllm serve Qwen/Qwen3-32B \
+                --disable-access-log-for-endpoints=/health,/metrics,/v1/models \
+                --tensor-parallel-size=2 \
+                --gpu-memory-utilization=0.95 \
+                ${LLMD_EXTRA_VLLM_ARGS}
           # env:
           #   # Uncomment for distributed tracing env vars
           #   - name: OTEL_SERVICE_NAME
@@ -48,6 +50,8 @@ spec:
               name: triton-cache
             - mountPath: /.config
               name: vllm-config
+            - mountPath: /preflight
+              name: preflight-scripts
           startupProbe:
             initialDelaySeconds: 15
             periodSeconds: 30
@@ -72,3 +76,8 @@ spec:
           emptyDir: {}
         - name: vllm-config
           emptyDir: {}
+        - name: preflight-scripts
+          configMap:
+            name: llm-d-preflight-checks
+            defaultMode: 0755
+            optional: true

@@ -8,16 +8,18 @@ spec:
     spec:
       containers:
         - name: modelserver
-          command: ["vllm", "serve"]
+          command: ["bash", "-c"]
           args:
-            - "openai/gpt-oss-120b"
-            - "--disable-access-log-for-endpoints=/health,/metrics,/v1/models"
-            - "--tensor-parallel-size=1"
-            - "--block-size=128"
-            - "--kv-transfer-config"
-            - '{"kv_connector":"NixlConnector", "kv_role":"kv_both"}'
-            - "--no-disable-hybrid-kv-cache-manager"
-            - "--gpu-memory-utilization=0.9"
+            - |
+              ${LLMD_PRE_START_COMMAND:+$LLMD_PRE_START_COMMAND &&} \
+              exec vllm serve openai/gpt-oss-120b \
+                --disable-access-log-for-endpoints=/health,/metrics,/v1/models \
+                --tensor-parallel-size=1 \
+                --block-size=128 \
+                --kv-transfer-config '{"kv_connector":"NixlConnector", "kv_role":"kv_both"}' \
+                --no-disable-hybrid-kv-cache-manager \
+                --gpu-memory-utilization=0.9 \
+                ${LLMD_EXTRA_VLLM_ARGS}
           env:
             - name: VLLM_NIXL_SIDE_CHANNEL_HOST
               valueFrom:
@@ -42,6 +44,8 @@ spec:
               name: shm
             - mountPath: /.cache
               name: torch-compile-cache
+            - mountPath: /preflight
+              name: preflight-scripts
           startupProbe:
             initialDelaySeconds: 15
             periodSeconds: 30
@@ -62,3 +66,8 @@ spec:
             sizeLimit: 20Gi
         - name: torch-compile-cache
           emptyDir: {}
+        - name: preflight-scripts
+          configMap:
+            name: llm-d-preflight-checks
+            defaultMode: 0755
+            optional: true

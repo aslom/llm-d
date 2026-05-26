@@ -188,6 +188,88 @@ curl -X POST http://${IP}/v1/completions \
     }' | jq
 ```
 
+## Customizing Startup
+
+The model server patches in this guide use a `bash -c` wrapper that supports two environment variables for runtime customization without modifying YAML:
+
+| Variable | Purpose | Default |
+|----------|---------|---------|
+| `LLMD_PRE_START_COMMAND` | Shell command(s) executed before `vllm serve` | unset (no-op) |
+| `LLMD_EXTRA_VLLM_ARGS` | Additional vLLM CLI flags appended to the serve command | unset (no-op) |
+
+When unset, both variables expand to empty strings at runtime — the deployment behaves identically to a direct `vllm serve` invocation.
+
+### How It Works
+
+The patches use this pattern in the container args:
+
+```bash
+${LLMD_PRE_START_COMMAND:+$LLMD_PRE_START_COMMAND &&} \
+exec vllm serve <model> <flags> ${LLMD_EXTRA_VLLM_ARGS}
+```
+
+- `${VAR:+...}` is bash syntax that expands to nothing when the variable is unset
+- `exec` replaces bash with vLLM as PID 1 for proper signal handling
+- Kubernetes does not evaluate `${...}` in args — only `bash -c` does at runtime
+
+### Enable Preflight Checks
+
+A built-in [preflight checks component](../recipes/modelserver/components/preflight-checks/) is available. It runs GPU, DNS, networking, and shared-memory diagnostics before vLLM starts.
+
+**At deploy time** (include as a kustomize component — no separate rollout):
+
+```yaml
+# In your overlay kustomization.yaml
+components:
+  - ../../../../../recipes/modelserver/components/preflight-checks
+```
+
+**Post-deploy** (the base patches already include the optional ConfigMap volume):
+
+```bash
+# Deploy the script
+kubectl apply -f guides/recipes/modelserver/components/preflight-checks/configmap.yaml -n $NAMESPACE
+
+# Enable on prefill (triggers rolling update)
+kubectl set env deployment/pd-disaggregation-nvidia-gpu-vllm-prefill \
+  LLMD_PRE_START_COMMAND="python3 /preflight/llm-d-preflight-checks.py" \
+  LLMD_PREFLIGHT_CHECKS=pause -n $NAMESPACE
+
+# Enable on decode
+kubectl set env deployment/pd-disaggregation-nvidia-gpu-vllm-decode \
+  LLMD_PRE_START_COMMAND="python3 /preflight/llm-d-preflight-checks.py" \
+  LLMD_PREFLIGHT_CHECKS=pause -n $NAMESPACE
+```
+
+See the [preflight checks README](../recipes/modelserver/components/preflight-checks/README.md) for mode options (`pause`, `strict`, default).
+
+### Add Extra vLLM Flags
+
+Append flags without editing patch files:
+
+```bash
+kubectl set env deployment/pd-disaggregation-nvidia-gpu-vllm-prefill \
+  LLMD_EXTRA_VLLM_ARGS="--enable-chunked-prefill --max-model-len=4096" -n $NAMESPACE
+```
+
+### Run a Custom Pre-Start Script
+
+Any shell command works — not just the built-in preflight checks:
+
+```bash
+kubectl set env deployment/pd-disaggregation-nvidia-gpu-vllm-prefill \
+  LLMD_PRE_START_COMMAND="echo 'starting at $(date)' && /my-scripts/validate-network.sh" -n $NAMESPACE
+```
+
+### Disable Customizations
+
+Remove the env vars to return to default behavior:
+
+```bash
+kubectl set env deployment/pd-disaggregation-nvidia-gpu-vllm-prefill \
+  LLMD_PRE_START_COMMAND- LLMD_EXTRA_VLLM_ARGS- -n $NAMESPACE
+```
+
 ## Benchmarking
 
 The benchmark launches a pod (`llmdbench-harness-launcher`) that, in this case, uses `inference-perf` with a synthetic workload named `20_1_isl_osl`. For more details, refer to the [benchmark instructions doc](../../helpers/benchmark.md).

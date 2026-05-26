@@ -1,0 +1,65 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../base
+
+components:
+  - ../../../../../recipes/modelserver/components/preflight-checks
+
+patches:
+  - target:
+      kind: Deployment
+      name: prefill
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 2
+      - op: replace
+        path: /spec/template/spec/containers/0/args
+        value:
+          - |
+            ${LLMD_PRE_START_COMMAND:+$LLMD_PRE_START_COMMAND &&} \
+            exec vllm serve facebook/opt-125m \
+              --disable-access-log-for-endpoints=/health,/metrics,/v1/models \
+              --tensor-parallel-size=1 \
+              --gpu-memory-utilization=0.9 \
+              ${LLMD_EXTRA_VLLM_ARGS}
+      - op: replace
+        path: /spec/template/spec/containers/0/resources
+        value:
+          limits:
+            cpu: "4"
+            memory: 8Gi
+            nvidia.com/gpu: "1"
+          requests:
+            cpu: "4"
+            memory: 8Gi
+            nvidia.com/gpu: "1"
+  - target:
+      kind: Deployment
+      name: decode
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 1
+      - op: replace
+        path: /spec/template/spec/containers/0/args
+        value:
+          - |
+            ${LLMD_PRE_START_COMMAND:+$LLMD_PRE_START_COMMAND &&} \
+            exec vllm serve facebook/opt-125m \
+              --disable-access-log-for-endpoints=/health,/metrics,/v1/models \
+              --tensor-parallel-size=1 \
+              --port=8200 \
+              ${LLMD_EXTRA_VLLM_ARGS}
+      - op: replace
+        path: /spec/template/spec/containers/0/resources
+        value:
+          limits:
+            cpu: "4"
+            memory: 8Gi
+            nvidia.com/gpu: "1"
+          requests:
+            cpu: "4"
+            memory: 8Gi
+            nvidia.com/gpu: "1"
